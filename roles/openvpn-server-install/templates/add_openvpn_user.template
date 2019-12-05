@@ -1,0 +1,19 @@
+#!/bin/bash
+
+if [[ -f create_user.log ]]; then
+	echo "List of users already created"
+	cat create_user.log
+else
+	echo "No users have been created for the moment on this VPN server"
+fi
+echo ""
+echo "Enter the name of the user to create :"
+read username
+
+source vars
+./build-key-pass $username
+
+echo "$username" >> create_user.log
+
+echo "Now you can run the script to generate the config for this user"
+

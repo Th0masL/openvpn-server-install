@@ -1,0 +1,19 @@
+---
+# Folder where to put the OpenVPN data files
+openvpn_data_folder: /data/openvpn
+
+# Specify the port for OpenVPN (Default: 1194)
+openvpn_port: 110
+
+# Specify the port for OpenVPN (Default: udp)
+openvpn_proto: tcp
+
+# Specify a Public FQDN for this server (optional, by default we will connect with the Public IP address)
+openvpn_fqdn: external_ip
+
+openvpn_users:
+  - thomas-mobile
+  - thomas-laptop
+  - thomas-desktop
+
+

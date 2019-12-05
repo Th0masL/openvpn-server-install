@@ -1,3 +1,337 @@
 # https://blog.ssdnodes.com/blog/tutorial-installing-openvpn-on-ubuntu-16-04/
 
+---
+  
+- name: "[DEBIAN/UBUNTU] Install packages with APT"
+  apt:
+    state: present
+    update_cache: yes
+    pkg:
+    - openvpn
+    - easy-rsa
+    - jq
+  when: ansible_os_family == "Debian"
 
+- name: Add user openvpn
+  user:
+    name: openvpn
+    shell: /usr/sbin/nologin
+
+- name: "Show the expected OpenVPN Data Folder we will use"
+  debug:
+    msg: "openvpn_data_folder : {{ openvpn_data_folder }}"
+
+- name: "Check if this folder exist or not"
+  stat:
+    path: "{{ openvpn_data_folder }}"
+  register: check_openvpn_folder
+
+- name: "Force the playbook to fail if we can't find this folder {{ openvpn_data_folder }}"
+  debug:
+    msg: "Please make sure that the folder {{ openvpn_data_folder }} exist"
+  when: check_openvpn_folder.stat.exists is defined and check_openvpn_folder.stat.exists == False
+  failed_when: True
+
+- name: "Check if the folder for the Certificate Authority exists or not"
+  stat:
+    path: "{{ openvpn_data_folder }}/openvpn-ca"
+  register: check_openvpn_ca_folder
+
+- name: "Create the Certificate Authority Directory if not exist already (folder : {{ openvpn_data_folder }}/openvpn-ca)"
+  shell: "make-cadir {{ openvpn_data_folder }}/openvpn-ca"
+  when: check_openvpn_ca_folder.stat.exists is defined and check_openvpn_ca_folder.stat.exists == False
+
+- name: "Check if the file /tmp/server_info.json exist"
+  stat:
+    path: "/tmp/server_info.json"
+  register: check_server_info
+
+- name: "Detect what's the location of this server"
+  shell: "curl --silent http://ipinfo.io | jq . > /tmp/server_info.json"
+  when: check_server_info.stat.exists is defined and check_server_info.stat.exists == False
+
+- name: "Load the info that we have found"
+  slurp:
+    src: /tmp/server_info.json
+  register: imported_json
+
+- name: "And save the content into a variable"
+  set_fact:
+    server_info: "{{ imported_json.content | b64decode | from_json }}"
+
+- name: "Save values to variables, that we will use for the Certificate Authority Settings"
+  set_fact:
+    KEY_COUNTRY: "{{ server_info.country }}"
+    KEY_PROVINCE: "{{ server_info.region }}"
+    KEY_CITY: "{{ server_info.city }}"
+    KEY_ORG: "{{ ansible_hostname }}"
+    KEY_OU: "{{ ansible_hostname }}"
+    KEY_NAME: "{{ ansible_hostname }}"
+    KEY_EMAIL: "admin@{{ ansible_hostname }}"
+    KEY_CONFIG: "{{ openvpn_data_folder }}/openvpn-ca/openssl-1.0.0.cnf"
+    PUBLIC_IP: "{{ server_info.ip }}"
+
+- name: "Show the values that we will use in the CA Settings"
+  debug:
+    msg: "{{ msg.split('\n') }}"
+  vars:
+    msg: |
+      "KEY_COUNTRY : {{ KEY_COUNTRY }}"
+      "KEY_PROVINCE : {{ KEY_PROVINCE }}"
+      "KEY_CITY : {{ KEY_CITY }}"
+      "KEY_ORG : {{ KEY_ORG }}"
+      "KEY_OU : {{ KEY_OU }}"
+      "KEY_NAME : {{ KEY_NAME }}"
+      "KEY_EMAIL : {{ KEY_EMAIL }}"
+      "KEY_CONFIG : {{ KEY_CONFIG }}"
+
+- name: "Check if this Certificate Authority has already been built or not"
+  stat:
+    path: "{{ openvpn_data_folder }}/openvpn-ca/keys/ca.crt"
+  register: check_cacrt_file
+
+- name: "If this CA has not been built already, declare the settings of the CA in the vars file"
+  lineinfile:
+    dest: "{{ openvpn_data_folder }}/openvpn-ca/vars"
+    regexp: "^{{ item.split('=')[0] }}="
+    line: "{{ item }}"
+  with_items:
+    - "export KEY_COUNTRY=\"{{ KEY_COUNTRY }}\""
+    - "export KEY_PROVINCE=\"{{ KEY_PROVINCE }}\""
+    - "export KEY_CITY=\"{{ KEY_CITY }}\""
+    - "export KEY_ORG=\"{{ KEY_ORG }}\""
+    - "export KEY_OU=\"{{ KEY_OU }}\""
+    - "export KEY_NAME=\"{{ KEY_NAME }}\""
+    - "export KEY_EMAIL=\"{{ KEY_EMAIL }}\""
+    - "export KEY_CONFIG=\"{{ KEY_CONFIG }}\""
+  when: check_cacrt_file.stat.exists is defined and check_cacrt_file.stat.exists == False
+
+- name: "If this CA has not been built already, build the Certificate Authority"
+  shell: >
+    source vars;
+    ./clean-all;
+    yes "" | ./build-ca;
+  args:
+    chdir: "{{ openvpn_data_folder }}/openvpn-ca"
+    executable: /bin/bash
+  register: build_result
+  when: check_cacrt_file.stat.exists is defined and check_cacrt_file.stat.exists == False
+
+- name: "Check if the Server Certificate has already been created or not"
+  stat:
+    path: "{{ openvpn_data_folder }}/openvpn-ca/keys/server.key"
+  register: check_serverkey_file
+
+- name: "If not, create the Server Certificate"
+  shell: >
+    source vars;
+    ./build-key-server --batch server;
+  args: 
+    chdir: "{{ openvpn_data_folder }}/openvpn-ca"
+    executable: /bin/bash
+  when: check_serverkey_file.stat.exists is defined and check_serverkey_file.stat.exists == False
+
+- name: "Check if Diffie-Hellman parameters and keys have been generated already"
+  stat:
+    path: "{{ openvpn_data_folder }}/openvpn-ca/keys/ta.key"
+  register: check_takey_file
+
+- name: "If not, generate the Diffie-Hellman parameters and key generation"
+  shell: >
+    source vars;
+    yes "" | ./build-dh;
+    openvpn --genkey --secret keys/ta.key;
+  args: 
+    chdir: "{{ openvpn_data_folder }}/openvpn-ca"
+    executable: /bin/bash
+  when: check_takey_file.stat.exists is defined and check_takey_file.stat.exists == False
+
+- name: "Copy all those files to the folder /etc/openvpn"
+  copy:
+    remote_src: yes
+    src: "{{ openvpn_data_folder }}/openvpn-ca/keys/{{ item }}"
+    dest: "/etc/openvpn/"
+  with_items:
+    - "ca.crt"
+    - "server.crt"
+    - "server.key"
+    - "ta.key"
+    - "dh2048.pem"
+  register: server_files_copied
+
+- name: "Check if the OpenVPN Server is already configured or not"
+  stat:
+    path: "/etc/openvpn/server.conf"
+  register: check_serverconf_files
+
+- name: "If not, generate the server.conf file from sample config"
+  become: yes
+  shell: >
+     gzip -d -c /usr/share/doc/openvpn/examples/sample-config-files/server.conf.gz | sudo tee /tmp/server.conf.template > /dev/null;
+     cat /tmp/server.conf.template > /etc/openvpn/server.conf;
+  when: check_serverconf_files.stat.exists is defined and check_serverconf_files.stat.exists == False
+
+- name: "Configure the OpenVPN Server Settings"
+  lineinfile:
+    dest: "/etc/openvpn/server.conf"
+    regexp: "^[;]*{{ item.name }} "
+    line: "{{ item.name }} {{ item.value }}"
+  with_items:
+    - { name: "user", value: "nobody" }
+    - { name: "group", value: "nogroup" }
+    - { name: "port", value: "{{ openvpn_port }}" }
+    - { name: "proto", value: "{{ openvpn_proto }}" }
+    - { name: "ifconfig-pool-persist", value: "ipp.txt" }
+    - { name: "push \"dhcp-option DNS", value: "208.67.220.220\"" }
+    - { name: "push \"redirect-gateway", value: "def1\"" }
+    - { name: "key-direction", value: "1" }
+  register: openvpn_server_config_result
+
+- name: Enable IP Forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: 1
+    state: present
+
+- name: "Determine the name of the network interface"
+  set_fact:
+    interface_name: "{{ ansible_default_ipv4.interface }}"
+
+- name: "Create the folder /scripts/iptables if not exist"
+  file:
+    path: /scripts/iptables
+    state: directory
+    owner: root
+    group: root
+    mode: 0770
+
+- name: "Deploy the iptable script to /scripts/iptables"
+  template:
+    src: 2_iptables_openvpn.template
+    dest: /scripts/iptables/2_iptables_openvpn.sh
+    owner: root
+    group: root
+    mode: 0770
+  register: script_deployed
+
+- name: "Execute the iptables script to allow the traffic from the OpenVPN Tunnel"
+  shell: /scripts/iptables/2_iptables_openvpn.sh
+  when: script_deployed.changed == True
+
+- name: "Restart the OpenVPN Service to apply the changes and enable auto-start on boot"
+  service:
+    name: openvpn
+    state: restarted
+    enabled: yes
+  when: server_files_copied.changed == True or openvpn_server_config_result.changed == True
+
+- name: "Create folder that will contain the clients configuration"
+  file: 
+    owner: root
+    group: root
+    path: "{{ openvpn_data_folder }}/openvpn-clients"
+    state: directory
+    mode: 0700
+
+- name: "Check if the client base config file has been generated already"
+  stat:
+    path: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+  register: check_clientconfig_file
+
+- name: "If not created yet, copy it from the sample config"
+  become: yes
+  copy:
+      remote_src: yes
+      src: /usr/share/doc/openvpn/examples/sample-config-files/client.conf
+      dest: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+  when: check_clientconfig_file.stat.exists is defined and check_clientconfig_file.stat.exists == False
+
+- name: If we want to use the Public IP to connect, use it
+  set_fact:
+    openvpn_fqdn: "{{ PUBLIC_IP }}"
+  when: openvpn_fqdn == "external_ip"
+
+- name: Update some of the existing values in the client base config file
+  lineinfile:
+    dest: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+    regexp: "^[;]*{{ item.name }} "
+    line: "{{ item.name }} {{ item.value }}"
+  with_items:
+    - { name: "remote", value: "{{ openvpn_fqdn }} {{ openvpn_port }}" }
+    - { name: "user", value: "nobody" }
+    - { name: "group", value: "nogroup" }
+    - { name: "proto", value: "{{ openvpn_proto }}" }
+    - { name: "cipher", value: "AES-256-CBC" }
+
+- name: Disable some other settings that we don't want/need
+  replace:
+    path: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+    regexp: "^({{ item }}.*)"
+    replace: ';\1'
+  with_items:
+    - "ca ca.crt"
+    - "cert client.crt"
+    - "key client.key"
+    - "tls-auth ta.key"
+    - "remote my-server-1"
+    - "remote my-server-2"
+    - "explicit-exit-notify"
+
+- name: "Load the content of the client base config file"
+  shell: "cat {{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+  register: client_base_config_content
+  changed_when: False
+
+- name: "If not added yet, add a new empty line at the end of the file"
+  shell: "echo '' >> {{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+  when: client_base_config_content.stdout.find('# Custom settings') == -1
+
+- name: "If not added yet, add a new comment block in the file"
+  lineinfile:
+    dest: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+    line: "# Custom settings"
+    insertafter: EOF
+    regexp: "^# Custom settings"
+  when: client_base_config_content.stdout.find('# Custom settings') == -1
+
+- name: "If not added yet, and add another empty line at the end of the file"
+  shell: "echo '' >> {{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+  when: client_base_config_content.stdout.find('# Custom settings') == -1
+
+- name: Add some specific settings to the client base config file
+  lineinfile:
+    dest: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+    regexp: "^[;]*{{ item.name }} "
+    line: "{{ item.name }} {{ item.value }}"
+    insertafter: "# Custom settings"
+  with_items:
+    - { name: "key-direction", value: "1" }
+    - { name: "auth", value: "SHA512" }
+
+- name: Add some additionnal comments to the client base config file
+  lineinfile:
+    dest: "{{ openvpn_data_folder }}/openvpn-clients/base_config.conf"
+    regexp: "^{{ item }}"
+    line: "{{ item }}"
+    insertafter: EOF
+  with_items:
+    - "# The 3 following lines are to uncomment on Linux-based systems that use update-resolv-conf"
+    - "# script-security 2"
+    - "# up /etc/openvpn/update-resolv-conf"
+    - "# down /etc/openvpn/update-resolv-conf"
+
+- name: "Deploy the script that will allow to add new users"
+  template:
+    src: add_openvpn_user.template
+    dest : "{{ openvpn_data_folder }}/openvpn-ca/add_openvpn_user.sh"
+    mode: 0770
+    owner: root
+    group: root
+
+- name: "Deploy the script that will create the user configuration file"
+  template:
+    src: generate_openvpn_user_config.template
+    dest: "{{ openvpn_data_folder }}/openvpn-clients/generate_openvpn_user_config.sh"
+    mode: 0770
+    owner: root
+    group: root

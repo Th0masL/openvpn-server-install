@@ -1,0 +1,50 @@
+#!/bin/bash
+
+if [[ -f {{ openvpn_data_folder }}/openvpn-ca/create_user.log ]]; then
+    echo "List of available users :"
+    cat {{ openvpn_data_folder }}/openvpn-ca/create_user.log
+    echo ""
+else
+    echo "ERROR - It seems that no users have been created. Please run the script to create the user first"
+    exit 0
+fi
+
+echo "Write the name of the user that you want to generate the config for :"
+read username
+
+if [[ -f $username.ovpn ]]; then
+	echo "The configuration for this user is already in this folder. No need to recreate one"
+	exit 0
+fi
+
+if [[ ! -f {{ openvpn_data_folder }}/openvpn-ca/keys/$username.crt ]]; then
+	echo "Error, unable to find the file /home/openvpn-ca/keys/$username.crt. Make sure that this user exist"
+	exit 1
+fi
+
+if [[ ! -f base_config.conf ]]; then
+    echo "ERROR - Unable to find the base configuration file base_config.conf"
+    exit 1
+fi
+
+cat base_config.conf > $username.ovpn
+echo "" >> $username.ovpn
+echo "" >> $username.ovpn
+echo "<ca>" >> $username.ovpn
+cat {{ openvpn_data_folder }}/openvpn-ca/keys/ca.crt >> $username.ovpn
+echo "</ca>" >> $username.ovpn
+echo "<cert>" >> $username.ovpn
+cat {{ openvpn_data_folder }}/openvpn-ca/keys/$username.crt >> $username.ovpn
+echo "</cert>" >> $username.ovpn
+echo "<key>" >> $username.ovpn
+cat {{ openvpn_data_folder }}/openvpn-ca/keys/$username.key >> $username.ovpn
+echo "</key>" >> $username.ovpn
+echo "<tls-auth>" >> $username.ovpn
+cat {{ openvpn_data_folder }}/openvpn-ca/keys/ta.key >> $username.ovpn
+echo "</tls-auth>" >> $username.ovpn
+
+if [[ -f $username.ovpn ]]; then
+    echo "OK - The config for the user $username has been created : $username.ovpn"
+fi
+
+
