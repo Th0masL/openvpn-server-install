@@ -185,6 +185,7 @@
     - { name: "push \"dhcp-option DNS", value: "208.67.220.220\"" }
     - { name: "push \"redirect-gateway", value: "def1\"" }
     - { name: "key-direction", value: "1" }
+    - { name: "auth", value: "SHA512" }
   register: openvpn_server_config_result
 
 - name: Enable IP Forwarding
